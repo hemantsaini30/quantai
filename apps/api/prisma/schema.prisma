@@ -1,0 +1,31 @@
+// FILE LOCATION: quantai/apps/api/prisma/schema.prisma
+//
+// This starts empty on purpose (Phase 0 = foundation only).
+// Each future phase adds its own models here, e.g.:
+//   Phase 2 (Auth)          -> User, RefreshToken
+//   Phase 3 (Portfolios)    -> Portfolio, Holding, PortfolioConstraint, PortfolioConstraintOverride
+//   Phase 5 (Optimization)  -> OptimizationRun
+//   Phase 6 (Monte Carlo)   -> SimulationRun
+//   Phase 7 (Backtest)      -> BacktestRun
+//   Phase 9 (RAG)           -> Document, DocumentChunk  (raw SQL for the vector column - Prisma
+//                              doesn't natively support pgvector type, handled via migration)
+//   Phase 10 (Assistant)    -> AssistantConversation, AssistantMessage
+//
+// See docs/architecture/quantai-v2-architecture.md for full schema reference.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Phase 0 sanity-check model — confirms Prisma can connect to Postgres
+// and run a migration. Safe to delete once Phase 2's User model exists.
+model HealthCheck {
+  id        Int      @id @default(autoincrement())
+  status    String   @default("ok")
+  checkedAt DateTime @default(now())
+}

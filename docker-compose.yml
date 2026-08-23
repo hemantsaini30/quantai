@@ -1,0 +1,29 @@
+# FILE LOCATION: quantai/docker-compose.yml
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: quantai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quantai
+      POSTGRES_PASSWORD: quantai_dev_password
+      POSTGRES_DB: quantai
+    ports:
+      - "5432:5432"
+    volumes:
+      - quantai_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: quantai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - quantai_redis_data:/data
+
+volumes:
+  quantai_postgres_data:
+  quantai_redis_data:
