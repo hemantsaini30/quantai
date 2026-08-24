@@ -73,6 +73,26 @@ def test_fetch_quote_snapshot_uses_attribute_access_not_dict_get(mock_ticker_cls
     assert result["volume"] == 1_000_000
 
 
+@patch("app.markets.market_data_service.yf.Ticker")
+def test_fetch_quote_snapshot_handles_yfinance_failure_gracefully(mock_ticker_cls):
+    """
+    Regression test for a real live bug: when Yahoo Finance rate-limits or
+    the network fails, yfinance raises an exception while building fast_info.
+    This must return a "no data" snapshot, not crash the whole endpoint.
+    """
+    mock_ticker = MagicMock()
+    # Accessing .fast_info itself raises, simulating yfinance's network/JSON error
+    type(mock_ticker).fast_info = property(lambda self: (_ for _ in ()).throw(Exception("429 Too Many Requests")))
+    mock_ticker_cls.return_value = mock_ticker
+
+    result = service.fetch_quote_snapshot("FAKE")
+
+    assert result["symbol"] == "FAKE"
+    assert result["last_price"] is None
+    assert result["change"] is None
+    assert result["percent_change"] is None
+
+
 @patch("app.markets.market_data_service.fetch_quote_snapshot")
 def test_get_top_gainers_sorts_descending(mock_fetch):
     def side_effect(symbol):

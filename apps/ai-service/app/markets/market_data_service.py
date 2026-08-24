@@ -19,18 +19,28 @@ def fetch_quote_snapshot(symbol: str) -> dict:
     dict — attributes must be accessed as info.last_price, not info.get("last_price")
     (the latter silently returns None for every field without erroring, which
     is an easy, quiet bug to introduce here).
+
+    NOTE: yfinance calls Yahoo Finance's unofficial API over the network. This
+    can fail for reasons outside our control — rate limiting (HTTP 429),
+    temporary network issues, or Yahoo changing their response format. A
+    failure fetching ONE symbol should never crash the whole endpoint, so
+    every failure mode here is caught and turned into a "no data" result
+    rather than an unhandled exception.
     """
     ticker = yf.Ticker(symbol)
-    info = ticker.fast_info
 
-    def safe_get(attr_name):
-        try:
-            return getattr(info, attr_name)
-        except (KeyError, AttributeError):
-            return None
-
-    last_price = safe_get("last_price")
-    previous_close = safe_get("previous_close")
+    try:
+        info = ticker.fast_info
+        last_price = _safe_get(info, "last_price")
+        previous_close = _safe_get(info, "previous_close")
+        day_high = _safe_get(info, "day_high")
+        day_low = _safe_get(info, "day_low")
+        volume = _safe_get(info, "last_volume")
+    except Exception:
+        # Covers yfinance's network errors, JSON decode errors on malformed
+        # Yahoo responses, and rate-limit (429) failures — all of which can
+        # legitimately happen with this free, unofficial data source.
+        last_price = previous_close = day_high = day_low = volume = None
 
     change = None
     percent_change = None
@@ -44,11 +54,17 @@ def fetch_quote_snapshot(symbol: str) -> dict:
         "previous_close": previous_close,
         "change": change,
         "percent_change": percent_change,
-        "day_high": safe_get("day_high"),
-        "day_low": safe_get("day_low"),
-        "volume": safe_get("last_volume"),
+        "day_high": day_high,
+        "day_low": day_low,
+        "volume": volume,
     }
 
+
+def _safe_get(info, attr_name):
+    try:
+        return getattr(info, attr_name)
+    except (KeyError, AttributeError):
+        return None
 
 def get_indices_snapshot(market: str) -> list[dict]:
     indices = get_indices(market)
