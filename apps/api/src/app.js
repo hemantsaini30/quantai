@@ -4,19 +4,21 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const healthRoutes = require("./shared/healthRoutes");
+const marketsRoutes = require("./modules/markets/marketsRoutes");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-// Phase 0: only the health-check route exists.
+app.use("/api/health", healthRoutes);
+app.use("/api/markets", marketsRoutes);
+
 // Future phases register their own module routers here, e.g.:
 //   const authRoutes = require("./modules/auth/authRoutes");
 //   app.use("/api/auth", authRoutes);
-app.use("/api/health", healthRoutes);
 
-// Centralized error handler (kept minimal for Phase 0, extended later)
+// Centralized error handler (kept minimal for Phase 0/1, extended later)
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(err.statusCode || 500).json({
