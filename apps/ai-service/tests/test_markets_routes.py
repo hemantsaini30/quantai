@@ -74,29 +74,27 @@ def test_search_route_requires_query_param(mock_search):
     mock_search.assert_called_once_with("tcs", "IN")
 
 
-@patch("app.api.markets.service.get_sector_performance")
-@patch("app.api.markets.service.get_most_active")
-@patch("app.api.markets.service.get_top_losers")
-@patch("app.api.markets.service.get_top_gainers")
-@patch("app.api.markets.service.get_indices_snapshot")
-def test_overview_route_aggregates_all_five_pieces(
-    mock_indices, mock_gainers, mock_losers, mock_active, mock_sectors
-):
-    mock_indices.return_value = [{"symbol": "^NSEI"}]
-    mock_gainers.return_value = [{"symbol": "A"}]
-    mock_losers.return_value = [{"symbol": "B"}]
-    mock_active.return_value = [{"symbol": "C"}]
-    mock_sectors.return_value = [{"sector": "IT", "average_percent_change": 1.0}]
+@patch("app.api.markets.service.get_market_overview")
+def test_overview_route_delegates_to_get_market_overview(mock_get_overview):
+    """
+    Updated for the N+1 yfinance call fix: the route now calls a single
+    get_market_overview() function (which internally fetches equities once
+    and derives gainers/losers/most-active/sectors from that single
+    snapshot) instead of calling four separate service functions directly.
+    """
+    mock_get_overview.return_value = {
+        "indices": [{"symbol": "^NSEI"}],
+        "top_gainers": [{"symbol": "A"}],
+        "top_losers": [{"symbol": "B"}],
+        "most_active": [{"symbol": "C"}],
+        "sector_performance": [{"sector": "IT", "average_percent_change": 1.0}],
+    }
 
     response = client.get("/api/markets/overview?market=IN")
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["indices"] == [{"symbol": "^NSEI"}]
-    assert body["top_gainers"] == [{"symbol": "A"}]
-    assert body["top_losers"] == [{"symbol": "B"}]
-    assert body["most_active"] == [{"symbol": "C"}]
-    assert body["sector_performance"] == [{"sector": "IT", "average_percent_change": 1.0}]
+    assert response.json() == mock_get_overview.return_value
+    mock_get_overview.assert_called_once_with("IN")
 
 
 def test_health_route_still_works_alongside_markets():

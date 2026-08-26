@@ -9,13 +9,7 @@ router = APIRouter()
 @router.get("/overview")
 def market_overview(market: str = Query("IN", description="'IN' or 'US'")):
     """Single call the dashboard homepage uses to load everything at once."""
-    return {
-        "indices": service.get_indices_snapshot(market),
-        "top_gainers": service.get_top_gainers(market),
-        "top_losers": service.get_top_losers(market),
-        "most_active": service.get_most_active(market),
-        "sector_performance": service.get_sector_performance(market),
-    }
+    return service.get_market_overview(market)
 
 
 @router.get("/indices")

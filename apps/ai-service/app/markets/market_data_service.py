@@ -1,13 +1,20 @@
 # FILE LOCATION: quantai/apps/ai-service/app/markets/market_data_service.py
 """
-All yfinance calls live here, isolated from the router (built in Section 2)
-so this fetch/transform logic can be unit-tested without needing a live
-network call in every test (mock this module's functions instead).
+All yfinance calls live here, isolated from the router so this fetch/
+transform logic can be unit-tested without needing a live network call
+in every test (mock this module's functions instead).
 """
 
 import yfinance as yf
 
 from app.markets.universe import get_equities, get_indices
+
+
+def _safe_get(info, attr_name):
+    try:
+        return getattr(info, attr_name)
+    except (KeyError, AttributeError):
+        return None
 
 
 def fetch_quote_snapshot(symbol: str) -> dict:
@@ -17,8 +24,7 @@ def fetch_quote_snapshot(symbol: str) -> dict:
 
     NOTE: fast_info is a yfinance.scrapers.quote.FastInfo object, NOT a plain
     dict — attributes must be accessed as info.last_price, not info.get("last_price")
-    (the latter silently returns None for every field without erroring, which
-    is an easy, quiet bug to introduce here).
+    (the latter silently returns None for every field without erroring).
 
     NOTE: yfinance calls Yahoo Finance's unofficial API over the network. This
     can fail for reasons outside our control — rate limiting (HTTP 429),
@@ -37,9 +43,6 @@ def fetch_quote_snapshot(symbol: str) -> dict:
         day_low = _safe_get(info, "day_low")
         volume = _safe_get(info, "last_volume")
     except Exception:
-        # Covers yfinance's network errors, JSON decode errors on malformed
-        # Yahoo responses, and rate-limit (429) failures — all of which can
-        # legitimately happen with this free, unofficial data source.
         last_price = previous_close = day_high = day_low = volume = None
 
     change = None
@@ -60,12 +63,6 @@ def fetch_quote_snapshot(symbol: str) -> dict:
     }
 
 
-def _safe_get(info, attr_name):
-    try:
-        return getattr(info, attr_name)
-    except (KeyError, AttributeError):
-        return None
-
 def get_indices_snapshot(market: str) -> list[dict]:
     indices = get_indices(market)
     results = []
@@ -79,8 +76,10 @@ def get_indices_snapshot(market: str) -> list[dict]:
 def get_equities_snapshot(market: str) -> list[dict]:
     """
     Fetches a snapshot for every equity in the starter universe for this
-    market. This is the base data that gainers/losers/most-active/sector
-    views are all derived from — one fetch, multiple views.
+    market, ONCE. This is the single source of truth that gainers/losers/
+    most-active/sector views all derive from via pure in-memory sorting —
+    none of those functions make their own yfinance calls anymore (see
+    the "N+1 yfinance calls" fix below).
     """
     equities = get_equities(market)
     results = []
@@ -96,40 +95,70 @@ def get_equities_snapshot(market: str) -> list[dict]:
     return results
 
 
-def get_top_gainers(market: str, limit: int = 5) -> list[dict]:
-    snapshots = [s for s in get_equities_snapshot(market) if s["percent_change"] is not None]
-    snapshots.sort(key=lambda s: s["percent_change"], reverse=True)
-    return snapshots[:limit]
+def get_top_gainers(market: str, limit: int = 5, snapshot: list[dict] | None = None) -> list[dict]:
+    """
+    snapshot can be passed in (already-fetched equities data) to avoid a
+    redundant yfinance re-fetch when called as part of get_market_overview.
+    If not passed, fetches fresh — used when this endpoint is hit on its own.
+    """
+    data = snapshot if snapshot is not None else get_equities_snapshot(market)
+    filtered = [s for s in data if s["percent_change"] is not None]
+    filtered.sort(key=lambda s: s["percent_change"], reverse=True)
+    return filtered[:limit]
 
 
-def get_top_losers(market: str, limit: int = 5) -> list[dict]:
-    snapshots = [s for s in get_equities_snapshot(market) if s["percent_change"] is not None]
-    snapshots.sort(key=lambda s: s["percent_change"])
-    return snapshots[:limit]
+def get_top_losers(market: str, limit: int = 5, snapshot: list[dict] | None = None) -> list[dict]:
+    data = snapshot if snapshot is not None else get_equities_snapshot(market)
+    filtered = [s for s in data if s["percent_change"] is not None]
+    filtered.sort(key=lambda s: s["percent_change"])
+    return filtered[:limit]
 
 
-def get_most_active(market: str, limit: int = 5) -> list[dict]:
-    snapshots = [s for s in get_equities_snapshot(market) if s["volume"] is not None]
-    snapshots.sort(key=lambda s: s["volume"], reverse=True)
-    return snapshots[:limit]
+def get_most_active(market: str, limit: int = 5, snapshot: list[dict] | None = None) -> list[dict]:
+    data = snapshot if snapshot is not None else get_equities_snapshot(market)
+    filtered = [s for s in data if s["volume"] is not None]
+    filtered.sort(key=lambda s: s["volume"], reverse=True)
+    return filtered[:limit]
 
 
-def get_sector_performance(market: str) -> list[dict]:
+def get_sector_performance(market: str, snapshot: list[dict] | None = None) -> list[dict]:
     """
     Groups the equity snapshot by sector and averages percent_change.
     Simple mean, not volume/market-cap-weighted — good enough for a Phase 1
     overview; weighted aggregation can be added later without changing the shape.
     """
-    snapshots = [s for s in get_equities_snapshot(market) if s["percent_change"] is not None]
+    data = snapshot if snapshot is not None else get_equities_snapshot(market)
+    filtered = [s for s in data if s["percent_change"] is not None]
 
     sectors: dict[str, list[float]] = {}
-    for s in snapshots:
+    for s in filtered:
         sectors.setdefault(s["sector"], []).append(s["percent_change"])
 
     return [
         {"sector": sector, "average_percent_change": sum(changes) / len(changes)}
         for sector, changes in sectors.items()
     ]
+
+
+def get_market_overview(market: str) -> dict:
+    """
+    Fetches the equity universe ONCE and derives gainers/losers/most-active/
+    sectors from that single snapshot, instead of each making its own
+    redundant pass over yfinance. This is the fix for a real problem seen
+    live: the old approach made ~40 yfinance calls per dashboard load
+    (10 symbols x 4 derived views), which triggered Yahoo's rate limiting
+    (HTTP 429) almost immediately. This version makes 10 (equities) + a
+    couple (indices) calls per load instead.
+    """
+    equities_snapshot = get_equities_snapshot(market)
+
+    return {
+        "indices": get_indices_snapshot(market),
+        "top_gainers": get_top_gainers(market, snapshot=equities_snapshot),
+        "top_losers": get_top_losers(market, snapshot=equities_snapshot),
+        "most_active": get_most_active(market, snapshot=equities_snapshot),
+        "sector_performance": get_sector_performance(market, snapshot=equities_snapshot),
+    }
 
 
 def get_price_history(symbol: str, period: str = "3mo") -> list[dict]:

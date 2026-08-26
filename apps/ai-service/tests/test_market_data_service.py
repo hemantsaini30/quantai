@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 from app.markets import market_data_service as service
 
 
+
 class FakeFastInfo:
     """
     Mimics yfinance's real FastInfo object shape (attribute access, not
@@ -189,3 +190,36 @@ def test_search_symbols_matches_name_or_symbol_case_insensitive():
     assert len(result_by_symbol) == 1
     assert result_by_symbol[0]["symbol"] == "TCS.NS"
     assert len(result_no_match) == 0
+
+
+
+
+def test_get_market_overview_fetches_equities_only_once():
+    """
+    Regression test for a real live bug: gainers/losers/most-active/sectors
+    were each independently re-fetching the whole equity universe, causing
+    ~40 yfinance calls per dashboard load and triggering Yahoo's rate limit
+    (HTTP 429) almost immediately. This test fails if that N+1 pattern is
+    ever reintroduced.
+    """
+    with patch("app.markets.market_data_service.fetch_quote_snapshot") as mock_fetch, \
+         patch("app.markets.market_data_service.get_equities") as mock_equities, \
+         patch("app.markets.market_data_service.get_indices") as mock_indices:
+
+        mock_equities.return_value = [
+            {"symbol": "A", "name": "A Corp", "sector": "Tech"},
+            {"symbol": "B", "name": "B Corp", "sector": "Tech"},
+        ]
+        mock_indices.return_value = [{"symbol": "^NSEI", "name": "NIFTY 50"}]
+        mock_fetch.side_effect = lambda symbol: {
+            "symbol": symbol,
+            "percent_change": 1.0,
+            "last_price": 100,
+            "volume": 1000,
+        }
+
+        service.get_market_overview("IN")
+
+        # 2 equities + 1 index = 3 total fetch_quote_snapshot calls,
+        # NOT 2 equities x 4 derived views + 1 index = 9 calls.
+        assert mock_fetch.call_count == 3
