@@ -1,15 +1,15 @@
 # FILE LOCATION: quantai/apps/ai-service/tests/test_market_data_service.py
 """
-These tests mock yfinance entirely — no live network calls, per the
-project's testing philosophy (never hit real external services in CI).
-They test the transform/aggregation logic in market_data_service.py,
-which is where bugs are most likely to hide (sorting, grouping, division).
+These tests mock yfinance/Twelve Data/Finnhub entirely — no live network
+calls, per the project's testing philosophy (never hit real external
+services in CI). They test the transform/aggregation/routing logic in
+market_data_service.py, which is where bugs are most likely to hide
+(sorting, grouping, division, and now source routing by market).
 """
 
 from unittest.mock import patch, MagicMock
 
 from app.markets import market_data_service as service
-
 
 
 class FakeFastInfo:
@@ -96,7 +96,7 @@ def test_fetch_quote_snapshot_handles_yfinance_failure_gracefully(mock_ticker_cl
 
 @patch("app.markets.market_data_service.fetch_quote_snapshot")
 def test_get_top_gainers_sorts_descending(mock_fetch):
-    def side_effect(symbol):
+    def side_effect(symbol, market="IN"):
         values = {"A": 5.0, "B": -2.0, "C": 10.0}
         return {"symbol": symbol, "percent_change": values[symbol], "last_price": 100}
 
@@ -115,7 +115,7 @@ def test_get_top_gainers_sorts_descending(mock_fetch):
 
 @patch("app.markets.market_data_service.fetch_quote_snapshot")
 def test_get_top_losers_sorts_ascending(mock_fetch):
-    def side_effect(symbol):
+    def side_effect(symbol, market="IN"):
         values = {"A": 5.0, "B": -2.0, "C": -10.0}
         return {"symbol": symbol, "percent_change": values[symbol], "last_price": 100}
 
@@ -134,7 +134,7 @@ def test_get_top_losers_sorts_ascending(mock_fetch):
 
 @patch("app.markets.market_data_service.fetch_quote_snapshot")
 def test_get_sector_performance_averages_correctly(mock_fetch):
-    def side_effect(symbol):
+    def side_effect(symbol, market="IN"):
         values = {"A": 10.0, "B": 20.0, "C": -6.0}
         return {"symbol": symbol, "percent_change": values[symbol], "last_price": 100}
 
@@ -155,7 +155,7 @@ def test_get_sector_performance_averages_correctly(mock_fetch):
 
 @patch("app.markets.market_data_service.fetch_quote_snapshot")
 def test_get_equities_snapshot_skips_symbols_that_error(mock_fetch):
-    def side_effect(symbol):
+    def side_effect(symbol, market="IN"):
         if symbol == "BAD":
             raise Exception("delisted or bad symbol")
         return {"symbol": symbol, "percent_change": 1.0, "last_price": 100}
@@ -192,8 +192,6 @@ def test_search_symbols_matches_name_or_symbol_case_insensitive():
     assert len(result_no_match) == 0
 
 
-
-
 def test_get_market_overview_fetches_equities_only_once():
     """
     Regression test for a real live bug: gainers/losers/most-active/sectors
@@ -211,7 +209,7 @@ def test_get_market_overview_fetches_equities_only_once():
             {"symbol": "B", "name": "B Corp", "sector": "Tech"},
         ]
         mock_indices.return_value = [{"symbol": "^NSEI", "name": "NIFTY 50"}]
-        mock_fetch.side_effect = lambda symbol: {
+        mock_fetch.side_effect = lambda symbol, market="IN": {
             "symbol": symbol,
             "percent_change": 1.0,
             "last_price": 100,
@@ -223,3 +221,78 @@ def test_get_market_overview_fetches_equities_only_once():
         # 2 equities + 1 index = 3 total fetch_quote_snapshot calls,
         # NOT 2 equities x 4 derived views + 1 index = 9 calls.
         assert mock_fetch.call_count == 3
+
+
+def test_fetch_quote_snapshot_uses_twelvedata_for_us_market():
+    with patch("app.markets.market_data_service.twelvedata_client.fetch_quote") as mock_td:
+        mock_td.return_value = {
+            "close": "200.50",
+            "previous_close": "198.00",
+            "change": "2.50",
+            "percent_change": "1.26",
+            "high": "201.00",
+            "low": "197.50",
+            "volume": "50000000",
+        }
+
+        result = service.fetch_quote_snapshot("AAPL", market="US")
+
+        assert result["last_price"] == 200.50
+        assert result["percent_change"] == 1.26
+        assert result["volume"] == 50000000
+        mock_td.assert_called_once_with("AAPL")
+
+
+def test_fetch_quote_snapshot_falls_back_to_yfinance_when_twelvedata_exhausted():
+    with patch("app.markets.market_data_service.twelvedata_client.fetch_quote") as mock_td, \
+         patch("app.markets.market_data_service.yf.Ticker") as mock_ticker_cls:
+        mock_td.side_effect = service.twelvedata_client.TwelveDataAllKeysExhaustedError("all exhausted")
+        mock_ticker_cls.return_value = make_fake_ticker(last_price=201.0, previous_close=198.0)
+
+        result = service.fetch_quote_snapshot("AAPL", market="US")
+
+        assert result["last_price"] == 201.0
+        mock_ticker_cls.assert_called_once()
+
+
+def test_fetch_quote_snapshot_uses_yfinance_only_for_IN_market():
+    with patch("app.markets.market_data_service.twelvedata_client.fetch_quote") as mock_td, \
+         patch("app.markets.market_data_service.yf.Ticker") as mock_ticker_cls:
+        mock_ticker_cls.return_value = make_fake_ticker(last_price=3800.0, previous_close=3750.0)
+
+        result = service.fetch_quote_snapshot("TCS.NS", market="IN")
+
+        assert result["last_price"] == 3800.0
+        mock_td.assert_not_called()
+
+
+def test_search_symbols_uses_finnhub_for_us_market():
+    with patch("app.markets.market_data_service.finnhub_client.search_us_symbols") as mock_finnhub:
+        mock_finnhub.return_value = [{"symbol": "AAPL", "name": "Apple Inc", "sector": None}]
+
+        result = service.search_symbols("apple", "US")
+
+        assert result == [{"symbol": "AAPL", "name": "Apple Inc", "sector": None}]
+        mock_finnhub.assert_called_once_with("apple")
+
+
+def test_search_symbols_falls_back_to_local_list_when_finnhub_fails():
+    with patch("app.markets.market_data_service.finnhub_client.search_us_symbols") as mock_finnhub, \
+         patch("app.markets.market_data_service.get_equities") as mock_universe:
+        mock_finnhub.side_effect = service.finnhub_client.FinnhubSearchError("no key")
+        mock_universe.return_value = [{"symbol": "AAPL", "name": "Apple", "sector": "Technology"}]
+
+        result = service.search_symbols("apple", "US")
+
+        assert len(result) == 1
+        assert result[0]["symbol"] == "AAPL"
+
+
+def test_search_symbols_never_calls_finnhub_for_IN_market():
+    with patch("app.markets.market_data_service.finnhub_client.search_us_symbols") as mock_finnhub, \
+         patch("app.markets.market_data_service.get_equities") as mock_universe:
+        mock_universe.return_value = [{"symbol": "TCS.NS", "name": "TCS", "sector": "IT"}]
+
+        service.search_symbols("tcs", "IN")
+
+        mock_finnhub.assert_not_called()
