@@ -38,8 +38,8 @@ def sectors(market: str = Query("IN")):
 
 
 @router.get("/quote/{symbol}")
-def quote(symbol: str):
-    return service.fetch_quote_snapshot(symbol)
+def quote(symbol: str, market: str = Query("IN")):
+    return service.fetch_quote_snapshot(symbol, market)
 
 
 @router.get("/history/{symbol}")

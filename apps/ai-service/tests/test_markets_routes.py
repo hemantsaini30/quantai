@@ -60,7 +60,17 @@ def test_quote_route_passes_symbol_from_path(mock_fetch):
 
     assert response.status_code == 200
     assert response.json()["symbol"] == "AAPL"
-    mock_fetch.assert_called_once_with("AAPL")
+    mock_fetch.assert_called_once_with("AAPL", "IN")
+
+
+@patch("app.api.markets.service.fetch_quote_snapshot")
+def test_quote_route_passes_market_query_param(mock_fetch):
+    mock_fetch.return_value = {"symbol": "AAPL", "last_price": 200}
+
+    response = client.get("/api/markets/quote/AAPL?market=US")
+
+    assert response.status_code == 200
+    mock_fetch.assert_called_once_with("AAPL", "US")
 
 
 @patch("app.api.markets.service.search_symbols")
